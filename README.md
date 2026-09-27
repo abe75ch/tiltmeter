@@ -69,7 +69,15 @@ Run `tiltmeter check` at any time for a report. Set thresholds per question
 - The accuracy estimate assumes Jev's probabilities stay calibrated. It is an early
   warning, not a replacement for checking labelled examples.
 - A question needs at least 50 answers in each of two windows of up to 200 before it is
-  checked. With windows this small, about 1 to 2 steady runs in 100 raise a false alarm.
+  checked. A drift or accuracy alert needs a real effect size and statistical significance
+  (p < 0.001), so small samples and questions with many options don't raise false alarms:
+  in simulation, unchanging traffic raised any alert in at most 0.3% of checks, while a
+  moderate real shift was caught every time.
+- Each window is compared with the one just before it, so a very slow, steady slide can
+  stay under the limits. Compare against an older export if you suspect one.
+- Estimated accuracy uses the chosen option's probability, not TypeSafe's `confidence`,
+  which measures how concentrated the answers are. Score questions get no accuracy
+  estimate, since a score is not a right-or-wrong decision.
 - The in-process wrapper covers the async client that Pydantic AI and `AsyncTypeSafeClient`
   use. For the synchronous `TypeSafeClient`, use the proxy.
 - Data lives in one local SQLite file. It suits a single app or machine, not a fleet.

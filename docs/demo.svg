@@ -11,7 +11,7 @@
 <text class="l6" x="18" y="181" fill="#ff7b72">ALERT [version] support-app/department</text>
 <text class="l7" x="18" y="201" fill="#8b949e">    model changed jev-1.12.0 -&gt; jev-1.13.0</text>
 <text class="l8" x="18" y="221" fill="#ff7b72">ALERT [drift] support-app/department</text>
-<text class="l9" x="18" y="241" fill="#8b949e">    answer distribution shifted, PSI 0.45; likely cause: model jev-1.12.0 -&gt; jev-1.13.0</text>
+<text class="l9" x="18" y="241" fill="#8b949e">    answer distribution shifted, PSI 0.45 (p=2e-10); likely cause: model jev-1.12.0 -&gt; jev-1.13.0</text>
 <text class="l10" x="18" y="261" fill="#ff7b72">ALERT [edge] support-app/department</text>
 <text class="l11" x="18" y="281" fill="#8b949e">    28% of recent answers within 0.05 of threshold 0.7: decisions are fragile</text>
 <text class="l12" x="18" y="301" fill="#ff7b72">ALERT [accuracy] support-app/department</text>
@@ -19,7 +19,7 @@
 <text class="l14" x="18" y="341" fill="#ff7b72">ALERT [version] support-app/is_urgent</text>
 <text class="l15" x="18" y="361" fill="#8b949e">    model changed jev-1.12.0 -&gt; jev-1.13.0</text>
 <text class="l16" x="18" y="381" fill="#ff7b72">ALERT [drift] support-app/is_urgent</text>
-<text class="l17" x="18" y="401" fill="#8b949e">    answer distribution shifted, PSI 5.96; likely cause: model jev-1.12.0 -&gt; jev-1.13.0</text>
+<text class="l17" x="18" y="401" fill="#8b949e">    answer distribution shifted, PSI 5.96 (p=2e-122); likely cause: model jev-1.12.0 -&gt; jev-1.13.0</text>
 <text class="l18" x="18" y="421" fill="#ff7b72">ALERT [edge] support-app/is_urgent</text>
 <text class="l19" x="18" y="441" fill="#8b949e">    26% of recent answers within 0.05 of threshold 0.7: decisions are fragile</text>
 <text class="l20" x="18" y="461" fill="#ff7b72">ALERT [accuracy] support-app/is_urgent</text>

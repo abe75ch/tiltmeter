@@ -35,7 +35,10 @@ UPSTREAM = os.environ.get("TYPESAFE_ENDPOINT", "https://api.typesafe.ai")
 DB = os.environ.get("TILTMETER_DB", "tiltmeter.db")
 WINDOW = 200        # answers per window: recent vs the baseline before it
 MIN_N = 50          # skip a question until each window has this many answers
-PSI_ALERT = 0.2     # common rule of thumb: >0.1 moderate shift, >0.25 major
+PSI_ALERT = 0.2     # effect size: common rule of thumb, >0.1 moderate shift, >0.25 major
+ALPHA = 0.001       # and the shift must be this unlikely under "nothing changed", so sample size and option count don't cause alarms
+RARE = 10           # buckets with fewer answers than this across both windows are merged, keeping the chi-square approximation valid
+Z_ALPHA = 3.09      # one-sided z for ALPHA, used by the accuracy-drop test
 EDGE_BAND = 0.05    # "near the threshold" means within this distance
 EDGE_ALERT = 0.2    # alert when this share of recent answers is near the threshold
 ACC_DROP = 0.05     # alert when estimated accuracy falls by this much
@@ -94,6 +97,49 @@ def psi(base, recent):
     return total
 
 
+def chi2_sf(x, df):
+    """P(X >= x) for a chi-square variable: the regularized upper incomplete gamma Q(df/2, x/2)."""
+    a, z = df / 2.0, x / 2.0
+    if x <= 0:
+        return 1.0
+    if z < a + 1:  # series for the lower gamma, then take the complement
+        term = total = 1.0 / a
+        n = a
+        while abs(term) > abs(total) * 1e-12:
+            n += 1
+            term *= z / n
+            total += term
+        return max(0.0, 1.0 - total * math.exp(-z + a * math.log(z) - math.lgamma(a)))
+    b, c, d = z + 1 - a, 1e300, 1.0 / (z + 1 - a)  # Lentz continued fraction for the upper gamma
+    h = d
+    for i in range(1, 500):
+        an = -i * (i - a)
+        b += 2
+        d = an * d + b
+        d = 1e-300 if abs(d) < 1e-300 else d
+        c = b + an / c
+        c = 1e-300 if abs(c) < 1e-300 else c
+        d = 1.0 / d
+        h *= d * c
+        if abs(d * c - 1) < 1e-12:
+            break
+    return min(1.0, math.exp(-z + a * math.log(z) - math.lgamma(a)) * h)
+
+
+def drift_test(base, recent):
+    """(PSI, p-value). Under no change, PSI * n1*n2/(n1+n2) is approximately chi-square with k-1 df."""
+    merged_b, merged_r = Counter(), Counter()
+    for k in set(base) | set(recent):
+        key = k if base.get(k, 0) + recent.get(k, 0) >= RARE else "_rare"
+        merged_b[key] += base.get(k, 0)
+        merged_r[key] += recent.get(k, 0)
+    nb, nr, k = sum(merged_b.values()), sum(merged_r.values()), len(set(merged_b) | set(merged_r))
+    if k < 2 or not nb or not nr:
+        return 0.0, 1.0
+    shift = psi(merged_b, merged_r)
+    return shift, chi2_sf(shift * nb * nr / (nb + nr), k - 1)
+
+
 def buckets(rows, qtype):
     if qtype == "noul":
         return Counter(min(int(v * 10), 9) for v, _, _ in rows)
@@ -102,11 +148,21 @@ def buckets(rows, qtype):
     return Counter(round(v) for v, _, _ in rows)
 
 
-def est_accuracy(rows, qtype, t):
-    """Expected share of correct decisions if the probabilities are calibrated."""
+def correct_probs(rows, qtype, t):
+    """Per answer, the chance the decision is right if Jev is calibrated. A yes/no acted on at
+    threshold t is right with p if p >= t, else 1 - p. A Choice is right with the chosen
+    option's probability (not TypeSafe's 'confidence', which measures concentration).
+    A Score is not a right-or-wrong decision, so it has none."""
     if qtype == "noul":
-        return sum(v if v >= t else 1 - v for v, _, _ in rows) / len(rows)
-    return sum((conf if conf is not None else v) for v, _, conf in rows) / len(rows)
+        return [v if v >= t else 1 - v for v, _, _ in rows]
+    if qtype == "choice":
+        return [v for v, _, _ in rows]
+    return None
+
+
+def mean_var(xs):
+    m = sum(xs) / len(xs)
+    return m, sum((x - m) ** 2 for x in xs) / max(len(xs) - 1, 1)
 
 
 def majority(xs):
@@ -131,19 +187,21 @@ def check(con, thresholds=None, window=WINDOW, min_n=MIN_N):
         if bm != rm:
             alerts.append(("version", name, f"model changed {bm} -> {rm}"))
         b, r = [x[2:] for x in base], [x[2:] for x in recent]
-        shift = psi(buckets(b, qtype), buckets(r, qtype))
-        if shift > PSI_ALERT:
-            alerts.append(("drift", name, f"answer distribution shifted, PSI {shift:.2f}; likely cause: {cause}"))
+        shift, pval = drift_test(buckets(b, qtype), buckets(r, qtype))
+        if shift > PSI_ALERT and pval < ALPHA:
+            alerts.append(("drift", name, f"answer distribution shifted, PSI {shift:.2f} (p={pval:.1g}); likely cause: {cause}"))
         t = thresholds.get(f"{project}/{qid}", thresholds.get(qid))
         if qtype in ("noul", "choice") and t is not None:
-            vals = [v if qtype == "noul" else (conf if conf is not None else v) for v, _, conf in r]
-            edge = sum(abs(v - t) < EDGE_BAND for v in vals) / len(vals)
+            edge = sum(abs(v - t) < EDGE_BAND for v, _, _ in r) / len(r)  # yes-probability or chosen-option probability
             if edge > EDGE_ALERT:
                 alerts.append(("edge", name, f"{edge:.0%} of recent answers within {EDGE_BAND} of threshold {t}: decisions are fragile"))
         t = 0.5 if t is None else t
-        ab, ar = est_accuracy(b, qtype, t), est_accuracy(r, qtype, t)
-        if ab - ar > ACC_DROP:
-            alerts.append(("accuracy", name, f"estimated accuracy {ab:.0%} -> {ar:.0%} (no labels; assumes calibration); likely cause: {cause}"))
+        cb, cr = correct_probs(b, qtype, t), correct_probs(r, qtype, t)
+        if cb is not None:
+            (ab, vb), (ar, vr) = mean_var(cb), mean_var(cr)
+            se = math.sqrt(vb / len(cb) + vr / len(cr))
+            if ab - ar > ACC_DROP and (se == 0 or (ab - ar) / se > Z_ALPHA):
+                alerts.append(("accuracy", name, f"estimated accuracy {ab:.0%} -> {ar:.0%} (no labels; assumes calibration); likely cause: {cause}"))
     return alerts
 
 
@@ -405,6 +463,32 @@ def selftest():
         record(con3, "p", req, {"model": "m1", "answers": {"q": a}}, 1)
     assert check(con3) == [], check(con3)
     assert abs(psi(Counter(a=50, b=50), Counter(a=50, b=50))) < 1e-9
+    for x, df in ((10.828, 1), (13.816, 2), (27.877, 9), (29.588, 10)):  # published 0.999 quantiles
+        assert abs(chi2_sf(x, df) - 0.001) < 2e-5, (x, df, chi2_sf(x, df))
+    assert abs(chi2_sf(2.0, 2) - math.exp(-1)) < 1e-9
+    # steady traffic stays quiet whatever the sample size or the number of options
+    def steady(kind, n_total, k=2, trials=60):
+        fired = 0
+        for seed in range(trials):
+            g, c = random.Random(seed), db(":memory:")
+            for _ in range(n_total):
+                if kind == "noul":
+                    a = {"type": "noul", "noul": g.betavariate(2, 5)}
+                else:
+                    o = f"o{g.randrange(k)}"
+                    a = {"type": "choice", "choice": o, "probabilities": {o: g.uniform(0.5, 0.9)}, "confidence": 0.5}
+                record(c, "p", req, {"model": "m", "answers": {"q": a}}, 1)
+            fired += bool(check(c))
+        return fired / trials
+    assert steady("noul", 250) <= 0.05  # baseline of only 50 answers
+    assert steady("choice", 400, k=30) <= 0.05 and steady("choice", 400, k=100) <= 0.05
+    # while a moderate real shift is still caught
+    c = db(":memory:")
+    for i in range(400):
+        record(c, "p", req, {"model": "m", "answers": {"q": {"type": "noul", "noul": rng.betavariate(2, 5) if i < 200 else rng.betavariate(4, 4)}}}, 1)
+    assert "drift" in {k for k, _, _ in check(c)}
+    # Choice accuracy uses the chosen option's probability, not confidence
+    assert correct_probs([(0.7, "x", 0.55)], "choice", 0.5) == [0.7] and correct_probs([(1.2, None, 0.4)], "score", 0.5) is None
     # alerts fire once, stay quiet, resolve, fire again; a second model switch is new news
     state, fired = db(":memory:"), [("drift", "p/q", "x"), ("version", "p/q", "a -> b")]
     assert len(track(state, fired)[0]) == 2 and track(state, fired) == ([], [])
@@ -490,7 +574,7 @@ def selftest():
         assert db(wpath).execute("select project, model, qid, value from answers").fetchall() == [("w", "jev-1.13.0", "urgent", 0.9)]
     print("ok  " + ("in-process wrapper passes answers through and never raises; " if httpx2 else "")
           + "proxy needs the caller's key, passes headers, returns 502 when TypeSafe is down; "
-          + "alerts fire once, retry after a failed webhook, report a second model switch; drift, edge, accuracy, edits and type changes behave")
+          + "alerts fire once, retry after a failed webhook, report a second model switch; drift needs significance, so false alarms stay low at any size; accuracy uses probabilities, not confidence")
 
 
 def parse_thresholds(items):
