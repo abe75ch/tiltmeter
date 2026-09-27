@@ -17,7 +17,14 @@ answer's probabilities and checks each question for:
   tiltmeter.py selftest
 
 Point your client at http://127.0.0.1:4790/v1/systemone, or
-http://127.0.0.1:4790/<project>/v1/systemone to keep apps apart.
+http://127.0.0.1:4790/<project>/v1/systemone to keep apps apart. The TypeSafe SDK and
+Pydantic AI both read TYPESAFE_BASE_URL, so setting it to http://127.0.0.1:4790 is enough.
+
+Or skip the proxy and record in-process with Pydantic AI (needs pydantic-ai-slim[typesafe]):
+
+  from pydantic_ai.providers.typesafe import TypeSafeProvider
+  import tiltmeter
+  provider = TypeSafeProvider(http_client=tiltmeter.instrument(project="support"))
 """
 import argparse, hashlib, json, math, os, random, sqlite3, sys, threading, time, urllib.error, urllib.request
 from collections import Counter
@@ -121,15 +128,70 @@ def check(con, thresholds=None, window=WINDOW, min_n=MIN_N):
     return alerts
 
 
-def notify(alerts, webhook=None):
+def track(con, alerts):
+    """An alert fires once, stays quiet while it persists, and is reported resolved when it clears."""
+    con.execute("""create table if not exists alerts(kind text, name text, msg text, first_ts real, last_ts real,
+                   active integer, primary key(kind, name))""")
+    now, current = time.time(), {(k, n): m for k, n, m in alerts}
+    active = {tuple(r) for r in con.execute("select kind, name from alerts where active=1")}
+    new = [(k, n, m) for (k, n), m in current.items() if (k, n) not in active]
+    resolved = [(k, n) for k, n in active if (k, n) not in current]
+    for k, n, m in new:
+        con.execute("""insert into alerts values (?,?,?,?,?,1) on conflict(kind, name)
+                       do update set msg=excluded.msg, first_ts=excluded.first_ts, last_ts=excluded.last_ts, active=1""",
+                    (k, n, m, now, now))
+    for (k, n), m in current.items():
+        if (k, n) in active:
+            con.execute("update alerts set msg=?, last_ts=? where kind=? and name=?", (m, now, k, n))
+    for k, n in resolved:
+        con.execute("update alerts set active=0, last_ts=? where kind=? and name=?", (now, k, n))
+    con.commit()
+    return new, resolved
+
+
+def notify(alerts, webhook=None, resolved=()):
     for kind, name, msg in alerts:
         print(f"ALERT [{kind}] {name}: {msg}", flush=True)
-    if webhook and alerts:
-        body = json.dumps({"text": "\n".join(f"[{k}] {n}: {m}" for k, n, m in alerts)}).encode()
+    for kind, name in resolved:
+        print(f"RESOLVED [{kind}] {name}", flush=True)
+    if webhook and (alerts or resolved):
+        lines = [f"[{k}] {n}: {m}" for k, n, m in alerts] + [f"resolved [{k}] {n}" for k, n in resolved]
+        body = json.dumps({"text": "\n".join(lines)}).encode()
         try:  # Slack-compatible incoming webhook
             urllib.request.urlopen(urllib.request.Request(webhook, body, {"Content-Type": "application/json"}), timeout=10)
         except (urllib.error.URLError, OSError) as e:
             print(f"webhook failed: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- in-process wrapper
+
+def instrument(project="default", db_path=None, transport=None, **client_kwargs):
+    """An httpx2.AsyncClient that records every Jev answer, for TypeSafeProvider(http_client=...)
+    or AsyncTypeSafeClient. Your app gets the exact same responses."""
+    import httpx2  # installed with pydantic-ai-slim[typesafe] and typesafe-sdk
+    path = db_path or DB
+
+    class Recorder(httpx2.AsyncBaseTransport):
+        def __init__(self):
+            self.inner = transport or httpx2.AsyncHTTPTransport()
+
+        async def handle_async_request(self, request):
+            start = time.time()
+            response = await self.inner.handle_async_request(request)
+            if request.url.path.endswith("/v1/systemone") and response.status_code == 200:
+                body = await response.aread()  # cached, so the caller still reads it normally
+                try:
+                    con = db(path)  # ponytail: a blocking sqlite write of a few ms; move to a queue if it ever shows up in latency
+                    record(con, project, json.loads(request.content), json.loads(body), (time.time() - start) * 1000, ts=start)
+                    con.close()
+                except (ValueError, KeyError, sqlite3.Error) as e:
+                    print(f"tiltmeter record failed: {e}", file=sys.stderr)
+            return response
+
+        async def aclose(self):
+            await self.inner.aclose()
+
+    return httpx2.AsyncClient(transport=Recorder(), **client_kwargs)
 
 
 # ---------------------------------------------------------------- proxy
@@ -175,14 +237,12 @@ def serve(port, upstream, db_path, thresholds, webhook, every=300):
     print(f"tiltmeter proxy on http://127.0.0.1:{port}/v1/systemone -> {upstream}, checks every {every}s", flush=True)
 
     def loop():
-        seen = set()
         while True:
             time.sleep(every)
             con = db(db_path)
-            fresh = [a for a in check(con, thresholds) if a not in seen]
+            new, resolved = track(con, check(con, thresholds))
             con.close()
-            seen.update(fresh)
-            notify(fresh, webhook)
+            notify(new, webhook, resolved)
     threading.Thread(target=loop, daemon=True).start()
     srv.serve_forever()
 
@@ -274,7 +334,30 @@ def selftest():
     drift = [m for k, _, m in check(con2) if k == "drift"]
     assert drift and "question text changed" in drift[0], drift
     assert abs(psi(Counter(a=50, b=50), Counter(a=50, b=50))) < 1e-9
-    print("ok  stable traffic is quiet; a model switch fires version, drift, edge and accuracy; edits are blamed on the edit")
+    # alerts fire once, stay quiet while they persist, resolve, and can fire again
+    state, fired = db(":memory:"), [("drift", "p/q", "x"), ("edge", "p/q", "y")]
+    assert len(track(state, fired)[0]) == 2
+    assert track(state, fired) == ([], [])
+    assert sorted(track(state, [])[1]) == [("drift", "p/q"), ("edge", "p/q")]
+    assert len(track(state, fired)[0]) == 2
+    try:
+        import asyncio, httpx2
+    except ImportError:
+        httpx2 = None
+    if httpx2:
+        import tempfile
+        wpath = os.path.join(tempfile.mkdtemp(prefix="tiltmeter-"), "w.db")
+        canned = {"model": "jev-1.13.0", "answers": {"urgent": {"type": "noul", "noul": 0.9}}}
+        mock = httpx2.MockTransport(lambda r: httpx2.Response(200, json=canned))
+
+        async def roundtrip():
+            async with instrument("w", wpath, transport=mock) as c:
+                r = await c.post("https://api.typesafe.ai/v1/systemone",
+                                 json={"questions": {"urgent": {"type": "noul", "instructions": "urgent?"}}})
+                return r.json()
+        assert asyncio.run(roundtrip()) == canned
+        assert db(wpath).execute("select project, model, qid, value from answers").fetchall() == [("w", "jev-1.13.0", "urgent", 0.9)]
+    print("ok  " + ("in-process wrapper records and passes answers through; " if httpx2 else "") + "stable traffic is quiet; a model switch fires version, drift, edge and accuracy; edits are blamed on the edit; alerts fire once until resolved")
 
 
 def parse_thresholds(items):
@@ -299,7 +382,11 @@ if __name__ == "__main__":
     if a.cmd == "serve":
         serve(a.port, a.upstream, a.db, th, a.webhook, a.every)
     elif a.cmd == "check":
-        notify(check(db(a.db), th), a.webhook)
+        con = db(a.db)
+        new, resolved = track(con, check(con, th))
+        notify(new, a.webhook, resolved)
+        still = con.execute("select kind, name, msg from alerts where active=1").fetchall()
+        print(f"{len(new)} new, {len(resolved)} resolved, {len(still)} active" + "".join(f"\n  active [{k}] {n}: {m}" for k, n, m in still))
     elif a.cmd == "demo":
         demo()
     else:
