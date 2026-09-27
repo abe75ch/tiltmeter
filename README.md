@@ -83,6 +83,11 @@ Run `tiltmeter check` at any time for a report. Set thresholds per question
 - Data lives in one local SQLite file. It suits a single app or machine, not a fleet.
 - The demo and self-check use simulated answers, not real Jev results.
 
+## How it was built
+
+Tiltmeter was written with an AI coding assistant, then reviewed, tested against real Jev
+calls, and covered by `tiltmeter selftest`. If something looks wrong, please open an issue.
+
 ## Not affiliated
 
 Tiltmeter is an independent project. It is not made, endorsed or supported by TypeSafe AI.
