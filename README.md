@@ -74,7 +74,7 @@ Run `tiltmeter check` at any time for a report. Set thresholds per question
   in simulation, unchanging traffic raised any alert in at most 0.3% of checks, while a
   moderate real shift was caught every time.
 - Each window is compared with the one just before it, so a very slow, steady slide can
-  stay under the limits. Compare against an older export if you suspect one.
+  stay under the limits. Comparing against a pinned reference window is not built yet.
 - Estimated accuracy uses the chosen option's probability, not TypeSafe's `confidence`,
   which measures how concentrated the answers are. Score questions get no accuracy
   estimate, since a score is not a right-or-wrong decision.
