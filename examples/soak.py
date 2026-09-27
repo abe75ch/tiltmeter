@@ -68,7 +68,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=float, default=60)
     ap.add_argument("--limit", type=int, default=0, help="stop after N tickets (0 = run forever)")
-    ap.add_argument("--check-every", type=int, default=60, help="tickets between Tiltmeter checks")
+    ap.add_argument("--check-every", type=int, default=60, help="tickets between Tiltmeter checks (0 = never)")
     a = ap.parse_args()
     pool, rng, db_path = tickets(), random.Random(), str(DATA / "soak.db")
     provider = TypeSafeProvider(http_client=tiltmeter.instrument(project="soak", db_path=db_path))
@@ -83,11 +83,9 @@ def main():
         except Exception as e:  # keep soaking through transient API errors
             print(f"{time.strftime('%H:%M:%S')} error: {type(e).__name__}: {str(e)[:200]}", flush=True)
         n += 1
-        if n % a.check_every == 0:
-            con = tiltmeter.db(db_path)
-            new, resolved = tiltmeter.track(con, tiltmeter.check(con, {"urgent": 0.5, "wants_human": 0.5}))
-            tiltmeter.notify(new, None, resolved)
-            print(f"{time.strftime('%H:%M:%S')} check: {len(new)} new, {len(resolved)} resolved alerts", flush=True)
+        if a.check_every and n % a.check_every == 0:
+            new, resolved, still = tiltmeter.run_check(db_path, {"urgent": 0.5, "wants_human": 0.5})
+            print(f"{time.strftime('%H:%M:%S')} check: {len(new)} new, {len(resolved)} resolved, {len(still)} active", flush=True)
         time.sleep(a.interval)
 
 

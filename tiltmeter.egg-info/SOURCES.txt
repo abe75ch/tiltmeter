@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+tiltmeter.py
+tiltmeter.egg-info/PKG-INFO
+tiltmeter.egg-info/SOURCES.txt
+tiltmeter.egg-info/dependency_links.txt
+tiltmeter.egg-info/entry_points.txt
+tiltmeter.egg-info/requires.txt
+tiltmeter.egg-info/top_level.txt

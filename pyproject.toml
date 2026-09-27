@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiltmeter"
+version = "0.1.0"
+description = "Notices your Jev decisions tilting before anything visibly breaks: drift, version and accuracy alerts for TypeSafe's System One API"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Andy Bermond" }]
+keywords = ["jev", "typesafe", "system-one", "monitoring", "drift", "calibration", "observability"]
+classifiers = ["Programming Language :: Python :: 3", "Topic :: System :: Monitoring", "Development Status :: 3 - Alpha"]
+
+[project.optional-dependencies]
+pydantic-ai = ["pydantic-ai-slim[typesafe]"]
+
+[project.scripts]
+tiltmeter = "tiltmeter:main"
+
+[project.urls]
+Repository = "https://github.com/abe75ch/tiltmeter"
+
+[tool.setuptools]
+py-modules = ["tiltmeter"]

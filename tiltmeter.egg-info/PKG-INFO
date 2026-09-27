@@ -1,3 +1,21 @@
+Metadata-Version: 2.4
+Name: tiltmeter
+Version: 0.1.0
+Summary: Notices your Jev decisions tilting before anything visibly breaks: drift, version and accuracy alerts for TypeSafe's System One API
+Author: Andy Bermond
+License-Expression: MIT
+Project-URL: Repository, https://github.com/abe75ch/tiltmeter
+Keywords: jev,typesafe,system-one,monitoring,drift,calibration,observability
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: System :: Monitoring
+Classifier: Development Status :: 3 - Alpha
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: pydantic-ai
+Requires-Dist: pydantic-ai-slim[typesafe]; extra == "pydantic-ai"
+Dynamic: license-file
+
 # Tiltmeter
 
 Notices your Jev decisions tilting before anything visibly breaks.
